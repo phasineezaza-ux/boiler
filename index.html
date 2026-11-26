@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ระบบติดตามแรงดันไอน้ำ (Boiler Pressure Monitor)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <!-- Chart.js จาก CDN (มีระบบกราฟ SVG สำรองในตัวหากไม่มีอินเทอร์เน็ต) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
+</head>
+<body>
+  <main class="app-container">
+    <!-- ส่วนหัวและการเลือกจุดติดตั้ง -->
+    <header class="top-header">
+      <div class="header-title-row">
+        <div>
+          <h1 class="brand-title">ระบบติดตามแรงดันไอน้ำ (Boiler)</h1>
+          <p class="brand-subtitle">อ่านค่าง่าย ดูได้ทุกที่ อัปเดตอัตโนมัติทุก 1 นาที</p>
+        </div>
+        <span id="connectionStatusPill" class="conn-pill is-demo">กำลังตรวจสอบการเชื่อมต่อ...</span>
+      </div>
+
+      <div class="header-controls">
+        <div class="control-group">
+          <label for="stationSelect" class="control-label">จุดติดตั้งที่ต้องการดู</label>
+          <select id="stationSelect" class="select-input" aria-label="เลือกจุดติดตั้ง"></select>
+        </div>
+
+        <div class="header-actions">
+          <button id="refreshNowBtn" type="button" class="btn btn-primary">รีเฟรชทันที</button>
+          <button id="openSettingsBtn" type="button" class="btn btn-outline">ตั้งค่าลิงก์ชีต</button>
+          <span id="refreshCountdownText" class="countdown-text">อัปเดตอัตโนมัติใน 60 วินาที</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- แบนเนอร์แจ้งข้อผิดพลาดในการเชื่อมต่อ -->
+    <div id="errorBanner" class="alert-banner alert-banner-error" style="display: none;" role="alert">
+      <strong>พบปัญหาการดึงข้อมูล:</strong>
+      <span id="errorBannerText"></span>
+    </div>
+
+    <!-- แบนเนอร์โหมดทดสอบ (แสดงเฉพาะเมื่อยังไม่ได้ตั้งค่า Web App URL จริง) -->
+    <section id="demoModeBanner" class="demo-banner" style="display: none;">
+      <div class="demo-banner-head">
+        <strong>โหมดทดสอบ (ข้อมูลตัวอย่าง 30 แถว — ยังไม่ได้เชื่อมต่อ Google Sheet จริง)</strong>
+        <span>กดปุ่มด้านล่างเพื่อลองดูหน้าจอแต่ละสถานะ:</span>
+      </div>
+      <div class="demo-scenarios">
+        <button type="button" class="demo-scenario-btn active" data-scenario="normal">ปกติ (7.8 Bar)</button>
+        <button type="button" class="demo-scenario-btn" data-scenario="warning">เตือน (7.3 Bar)</button>
+        <button type="button" class="demo-scenario-btn" data-scenario="alarm">Alarm ตก (6.8 Bar)</button>
+        <button type="button" class="demo-scenario-btn" data-scenario="stop">หยุดเดิน (0 Bar)</button>
+        <button type="button" class="demo-scenario-btn" data-scenario="stale">ขาดการติดต่อ (&gt;3 นาที)</button>
+        <button type="button" class="demo-scenario-btn" data-scenario="invalid">ค่าผิดพลาด (ERR)</button>
+      </div>
+    </section>
+
+    <!-- 1. การ์ดแสดงค่าแรงดันปัจจุบัน -->
+    <section id="statusHeroCard" class="status-hero-card status-normal" aria-live="polite">
+      <div class="hero-top">
+        <span id="heroStationCaption" class="hero-caption">แรงดันไอน้ำปัจจุบัน — Boiler (เมนหลัก)</span>
+        <span id="statusBadge" class="status-badge status-normal">
+          <span id="statusBadgeIcon"></span>
+          <span id="statusBadgeText">กำลังโหลด...</span>
+        </span>
+      </div>
+
+      <div class="pressure-readout">
+        <span id="currentPressureValue" class="pressure-number">--</span>
+        <span id="currentPressureUnit" class="pressure-unit">Bar</span>
+      </div>
+
+      <p id="statusDescription" class="status-description">กำลังดึงข้อมูลล่าสุด...</p>
+
+      <div id="staleWarningBanner" class="alert-banner alert-banner-stale" style="display: none;">
+        <strong>คำเตือน:</strong>
+        <span id="staleWarningText"></span>
+      </div>
+
+      <div class="hero-meta-row">
+        <span id="lastUpdatedText">อัปเดตล่าสุด: -</span>
+        <span id="thresholdRulesHint"></span>
+      </div>
+    </section>
+
+    <!-- 2. กราฟเส้นแนวโน้ม -->
+    <section class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">กราฟแนวโน้มแรงดันไอน้ำ</h2>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <span id="chartAggregationBadge" class="agg-badge">ความละเอียด 1 นาที</span>
+          <div class="range-pills" role="group" aria-label="เลือกช่วงเวลากราฟ">
+            <button type="button" class="range-pill active" data-days="1">24 ชม.</button>
+            <button type="button" class="range-pill" data-days="7">7 วัน</button>
+            <button type="button" class="range-pill" data-days="30">30 วัน</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="chart-wrapper">
+        <canvas id="pressureChart"></canvas>
+        <div id="chartSvgFallback" style="display:none; width:100%; height:100%;"></div>
+        <div id="chartEmptyState" class="chart-empty">ไม่พบข้อมูลในช่วงเวลาที่เลือก</div>
+      </div>
+    </section>
+
+    <!-- 3. ดูย้อนหลัง สรุปค่า และตารางบันทึกล่าสุด -->
+    <section class="card">
+      <div class="card-header">
+        <h2 class="card-title">ดูข้อมูลย้อนหลังและตารางบันทึก</h2>
+      </div>
+
+      <div class="date-filter-grid">
+        <div class="control-group">
+          <label for="dateFrom" class="control-label">ตั้งแต่วันที่</label>
+          <input id="dateFrom" type="date" class="date-input" />
+        </div>
+        <div class="control-group">
+          <label for="dateTo" class="control-label">ถึงวันที่</label>
+          <input id="dateTo" type="date" class="date-input" />
+        </div>
+        <button id="applyDateFilterBtn" type="button" class="btn btn-primary">ดูข้อมูล</button>
+      </div>
+
+      <div class="summary-grid">
+        <div class="kpi-box">
+          <div class="kpi-label">ค่าต่ำสุด (Min)</div>
+          <div class="kpi-value"><span id="summaryMin">--</span> <span class="kpi-unit">Bar</span></div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">ค่าเฉลี่ย (Avg)</div>
+          <div class="kpi-value"><span id="summaryAvg">--</span> <span class="kpi-unit">Bar</span></div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">ค่าสูงสุด (Max)</div>
+          <div class="kpi-value"><span id="summaryMax">--</span> <span class="kpi-unit">Bar</span></div>
+        </div>
+      </div>
+
+      <div id="summaryCountInfo" class="summary-count-info">ข้อมูลถูกต้อง 0 รายการ</div>
+
+      <div class="table-scroll">
+        <table class="logs-table">
+          <thead>
+            <tr>
+              <th>วัน-เวลา</th>
+              <th>แรงดัน</th>
+              <th>สถานะ</th>
+            </tr>
+          </thead>
+          <tbody id="recentLogsBody">
+            <tr>
+              <td colspan="3" class="table-empty">กำลังโหลดข้อมูล...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="footer-note">
+      Boiler Pressure Monitor • ค่าเกณฑ์ทั้งหมดจัดการได้ในไฟล์เดียว (<code>web/config.js</code>)
+    </footer>
+  </main>
+
+  <!-- Modal ตั้งค่า URL & Token -->
+  <div id="settingsModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="settingsModalTitle" class="modal-title">ตั้งค่าการเชื่อมต่อ Google Apps Script</h3>
+        <button id="closeSettingsBtn" type="button" class="btn btn-outline" style="min-height:36px; padding:4px 10px;">ปิด</button>
+      </div>
+      <form id="settingsForm" class="modal-form">
+        <div class="control-group">
+          <label for="inputWebAppUrl" class="control-label">Web App URL (ลงท้ายด้วย /exec)</label>
+          <input id="inputWebAppUrl" type="url" class="text-input" placeholder="https://script.google.com/macros/s/.../exec" required />
+        </div>
+        <div class="control-group">
+          <label for="inputApiToken" class="control-label">รหัสผ่าน API Token (ตรงกับ Script Properties)</label>
+          <input id="inputApiToken" type="password" class="text-input" placeholder="เช่น BOILER-SECRET-2026" required />
+        </div>
+        <p style="margin:0; font-size:0.8rem; color:var(--text-muted);">
+          หมายเหตุ: ค่าที่กรอกตรงนี้จะถูกบันทึกไว้เฉพาะในเบราว์เซอร์เครื่องนี้ หากต้องการให้ทุกคนเปิดดูได้ทันทีโดยไม่ต้องกรอก ให้ใส่ในไฟล์ <code>web/config.js</code>
+        </p>
+        <div class="modal-actions">
+          <button type="submit" class="btn btn-primary">บันทึกและเชื่อมต่อ</button>
+          <button id="resetToDemoBtn" type="button" class="btn btn-outline">สลับกลับไปโหมดทดสอบ</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- โหลดไฟล์ JS แบบแยกส่วนชัดเจน (ใช้งานได้ทั้งเปิดไฟล์ตรงๆ และบนโฮสต์) -->
+  <script src="config.js" defer></script>
+  <script src="domain/pressureEvaluator.js" defer></script>
+  <script src="services/dataService.js" defer></script>
+  <script src="ui/chart.js" defer></script>
+  <script src="ui/dashboard.js" defer></script>
+  <script src="app.js" defer></script>
+</body>
+</html>
